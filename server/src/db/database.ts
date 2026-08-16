@@ -1326,9 +1326,6 @@ function seedAcceptanceConfigs() {
 }
 
 function seedPermissionModules() {
-  const count = db.prepare('SELECT COUNT(*) as c FROM permission_modules').get() as any;
-  if (count.c > 0) return;
-
   const modules = [
     { code: 'dashboard', name: '工作台', parent_code: null, icon: 'DashboardOutlined', path: '/dashboard', sort_order: 1 },
     { code: 'projects', name: '项目管理', parent_code: null, icon: 'ProjectOutlined', path: '/projects', sort_order: 2 },
@@ -1344,20 +1341,38 @@ function seedPermissionModules() {
     { code: 'approval:config', name: '审批流程配置', parent_code: 'approval', icon: 'ApiOutlined', path: '/approval/config', sort_order: 51 },
     { code: 'approval:list', name: '审批记录', parent_code: 'approval', icon: 'AuditOutlined', path: '/approval/list', sort_order: 52 },
     { code: 'reports', name: '报表中心', parent_code: null, icon: 'BarChartOutlined', path: '/reports', sort_order: 6 },
-    { code: 'ce_materials', name: 'CE物料存档库', parent_code: null, icon: 'SafetyCertificateOutlined', path: '/ce-materials', sort_order: 7 },
+    { code: 'ce', name: 'CE管理', parent_code: null, icon: 'SafetyCertificateOutlined', path: null, sort_order: 7 },
+    { code: 'ce:materials', name: 'CE物料存档库', parent_code: 'ce', icon: 'SafetyCertificateOutlined', path: '/ce-materials', sort_order: 71 },
+    { code: 'ce:regulations', name: '国际法规核查清单', parent_code: 'ce', icon: 'GlobalOutlined', path: '/ce-regulations', sort_order: 72 },
+    { code: 'ce:export-control', name: '进出口物料管控核查', parent_code: 'ce', icon: 'AlertOutlined', path: '/ce-export-control', sort_order: 73 },
+    { code: 'ce:data-sources', name: '法规数据源配置', parent_code: 'ce', icon: 'ApiOutlined', path: '/ce-data-sources', sort_order: 74 },
     { code: 'files', name: '文件管理', parent_code: null, icon: 'FolderOpenOutlined', path: '/files', sort_order: 8 },
     { code: 'settings', name: '系统管理', parent_code: null, icon: 'SettingOutlined', path: null, sort_order: 90 },
     { code: 'settings:users', name: '用户管理', parent_code: 'settings', icon: 'UserOutlined', path: '/users', sort_order: 91 },
     { code: 'settings:roles', name: '角色配置', parent_code: 'settings', icon: 'TeamOutlined', path: '/settings/roles', sort_order: 92 },
     { code: 'settings:feishu', name: '飞书集成配置', parent_code: 'settings', icon: 'SettingOutlined', path: '/settings/feishu', sort_order: 93 },
     { code: 'settings:permissions', name: '权限配置', parent_code: 'settings', icon: 'SafetyOutlined', path: '/settings/permissions', sort_order: 94 },
+    { code: 'settings:system', name: '系统设置', parent_code: 'settings', icon: 'DatabaseOutlined', path: '/settings/system', sort_order: 95 },
   ];
 
-  const insert = db.prepare(`
+  const upsert = db.prepare(`
     INSERT INTO permission_modules (code, name, parent_code, icon, path, sort_order, is_menu)
-    VALUES (?, ?, ?, ?, ?, ?, 1)
+    VALUES (@code, @name, @parent_code, @icon, @path, @sort_order, 1)
+    ON CONFLICT(code) DO UPDATE SET
+      name = excluded.name,
+      parent_code = excluded.parent_code,
+      icon = excluded.icon,
+      path = excluded.path,
+      sort_order = excluded.sort_order,
+      is_menu = 1
   `);
-  modules.forEach(m => insert.run(m.code, m.name, m.parent_code, m.icon, m.path, m.sort_order));
+
+  const tx = db.transaction(() => {
+    // Remove the legacy orphan entry (previously was ce_materials at top-level)
+    db.prepare('DELETE FROM permission_modules WHERE code IN (?)').run('ce_materials');
+    modules.forEach(m => upsert.run(m));
+  });
+  tx();
 }
 
 function seedDefaultRoles() {
@@ -1378,57 +1393,60 @@ function seedDefaultRoles() {
 }
 
 function seedDefaultRolePermissions() {
-  const count = db.prepare('SELECT COUNT(*) as c FROM role_permissions').get() as any;
-  if (count.c > 0) {
-    const cols = db.prepare("PRAGMA table_info(role_permissions)").all() as any[];
-    const hasRole = cols.some(c => c.name === 'role');
-    const hasRoleCode = cols.some(c => c.name === 'role_code');
-    if (hasRole && !hasRoleCode) {
-      try {
-        db.exec('ALTER TABLE role_permissions RENAME COLUMN role TO role_code');
-      } catch (e) {}
-    }
-    return;
-  }
-
   const cols = db.prepare("PRAGMA table_info(role_permissions)").all() as any[];
   const hasRole = cols.some(c => c.name === 'role');
-  const roleCol = hasRole ? 'role' : 'role_code';
+  const hasRoleCode = cols.some(c => c.name === 'role_code');
+  if (hasRole && !hasRoleCode) {
+    try {
+      db.exec('ALTER TABLE role_permissions RENAME COLUMN role TO role_code');
+    } catch (e) {}
+  }
 
   const allModules = db.prepare('SELECT code FROM permission_modules').all() as any[];
   const allCodes = allModules.map(m => m.code);
 
-  const insert = db.prepare(`
-    INSERT INTO role_permissions (${roleCol}, module_code, can_view, can_edit, can_delete, can_approve)
+  const upsert = db.prepare(`
+    INSERT INTO role_permissions (role_code, module_code, can_view, can_edit, can_delete, can_approve)
     VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(role_code, module_code) DO UPDATE SET
+      can_view   = MAX(can_view,   excluded.can_view),
+      can_edit   = MAX(can_edit,   excluded.can_edit),
+      can_delete = MAX(can_delete, excluded.can_delete),
+      can_approve= MAX(can_approve,excluded.can_approve)
   `);
 
-  allCodes.forEach(code => {
-    insert.run('admin', code, 1, 1, 1, 1);
-    insert.run('super_admin', code, 1, 1, 1, 1);
-  });
-
-  function grant(role: string, perms: { code: string; view?: number; edit?: number; del?: number; approve?: number }[]) {
-    perms.forEach(p => {
-      insert.run(role, p.code, p.view ?? 1, p.edit ?? 0, p.del ?? 0, p.approve ?? 0);
+  const tx = db.transaction(() => {
+    // Admin & Super Admin: grant full permissions on every module (幂等)
+    allCodes.forEach(code => {
+      upsert.run('admin', code, 1, 1, 1, 1);
+      upsert.run('super_admin', code, 1, 1, 1, 1);
     });
-  }
 
-  grant('user', [
-    { code: 'dashboard' },
-    { code: 'projects' },
-    { code: 'qms' },
-    { code: 'qms:opl' },
-    { code: 'qms:anomaly', edit: 1 },
-    { code: 'qms:improvement', edit: 1 },
-    { code: 'acceptance' },
-    { code: 'acceptance:forms' },
-    { code: 'acceptance:plans' },
-    { code: 'approval' },
-    { code: 'approval:list' },
-    { code: 'ce_materials' },
-    { code: 'files' },
-  ]);
+    function grant(role: string, perms: { code: string; view?: number; edit?: number; del?: number; approve?: number }[]) {
+      perms.forEach(p => {
+        if (!allCodes.includes(p.code)) return;
+        upsert.run(role, p.code, p.view ?? 1, p.edit ?? 0, p.del ?? 0, p.approve ?? 0);
+      });
+    }
+
+    grant('user', [
+      { code: 'dashboard' },
+      { code: 'projects' },
+      { code: 'qms' },
+      { code: 'qms:opl' },
+      { code: 'qms:anomaly', edit: 1 },
+      { code: 'qms:improvement', edit: 1 },
+      { code: 'acceptance' },
+      { code: 'acceptance:forms' },
+      { code: 'acceptance:plans' },
+      { code: 'approval' },
+      { code: 'approval:list' },
+      { code: 'ce' },
+      { code: 'ce:materials' },
+      { code: 'files' },
+    ]);
+  });
+  tx();
 }
 
 function seedApqpPhases() {
