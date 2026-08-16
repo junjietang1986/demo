@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  trac-qms-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: trac-qms-dev
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+      - "5173:5173"
+    volumes:
+      - ./server/src:/app/server/src
+      - ./client/src:/app/client/src
+      - ./client/index.html:/app/client/index.html
+      - trac-dev-data:/app/server/data
+      - trac-dev-uploads:/app/server/uploads
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - TZ=Asia/Shanghai
+    networks:
+      - trac-dev-network
+    command: npm run dev
+
+volumes:
+  trac-dev-data:
+    driver: local
+  trac-dev-uploads:
+    driver: local
+
+networks:
+  trac-dev-network:
+    driver: bridge

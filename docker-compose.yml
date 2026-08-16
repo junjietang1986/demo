@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  trac-qms:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trac-qms-app
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - trac-data:/app/server/data
+      - trac-uploads:/app/server/uploads
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - TZ=Asia/Shanghai
+    networks:
+      - trac-network
+
+volumes:
+  trac-data:
+    driver: local
+  trac-uploads:
+    driver: local
+
+networks:
+  trac-network:
+    driver: bridge
